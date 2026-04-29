@@ -7,6 +7,13 @@
 
 ---
 
+## [1.2.1] - 2026-04-29
+
+### 修复
+
+- 🐛 **A 股东方财富历史行情更稳健** — `data_fetcher.py` 不再完全依赖 `ak.stock_zh_a_hist()` 的裸 `requests` 调用，改为优先使用插件内置的东方财富直连请求；安装 `curl_cffi` 时会模拟浏览器 TLS 指纹，降低 `RemoteDisconnected` / 连接被远端直接关闭的概率
+- 🐛 **减少东方财富全市场重请求** — A 股实时行情改为复用腾讯单票接口，不再为单只股票额外调用 `stock_zh_a_spot_em()` 拉取全市场分页列表，降低触发东方财富验证或临时风控的风险
+
 ## [1.2.0] - 2026-04-08
 
 ### 新增
@@ -90,6 +97,7 @@
 ---
 
 [1.2.0]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.2.0
+[1.2.1]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.2.1
 [1.1.3]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.1.3
 [1.1.2]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.1.2
 [1.1.1]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.1.1

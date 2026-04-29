@@ -19,6 +19,7 @@
 - ⚖️ **多空辩论机制** — 多方研究员与空方研究员进行投资辩论，碰撞观点
 - 🛡️ **风险评估裁判** — 风险裁判综合评估整体投资风险等级
 - 🔄 **多数据源容灾** — 东方财富数据源不可用时自动降级到腾讯财经接口
+- 🛡️ **东方财富防风控优化** — A 股历史行情优先使用带浏览器指纹的直连请求，减少 `RemoteDisconnected` 和验证拦截
 - 📱 **移动端支持** — 在移动设备上也能查看分析报告
 
 ### 待实现
@@ -142,6 +143,12 @@ git clone https://github.com/YYY7C/TradingAgents-AstrBot.git
 - `langchain-core` — LangChain 核心
 - `curl-cffi` — TLS 指纹模拟（反爬虫）
 - `openai` — OpenAI 兼容 API 客户端
+
+## 🔍 数据源稳定性说明
+
+- `akshare` 文档中的 `stock_zh_a_hist` 和 `stock_zh_a_spot_em` 都基于东方财富接口。
+- 当服务器 IP 位于海外、代理链路不稳定，或短时间内频繁请求东方财富分页接口时，可能出现 `RemoteDisconnected`、验证拦截或临时风控。
+- 插件当前会优先使用 `curl-cffi` 直连东方财富获取 A 股历史行情；如果仍失败，会自动降级到腾讯财经接口继续完成分析。
 
 ## 🙏 致谢
 
