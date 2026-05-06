@@ -2,7 +2,8 @@
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Any, Dict
+from importlib.util import find_spec
+from typing import Any
 
 from astrbot.api import logger
 
@@ -74,15 +75,16 @@ class DataFetcher:
         return "0"
 
     def _eastmoney_request_json(
-        self, url: str, params: Dict[str, Any], timeout: int = 15
+        self, url: str, params: dict[str, Any], timeout: int = 15
     ) -> dict[str, Any]:
         """
         直接请求东方财富 JSON 接口。
 
         优先使用 curl_cffi 模拟浏览器 TLS 指纹；否则退回 requests + 浏览器请求头。
         """
-        import requests
         import time
+
+        import requests
 
         min_interval = 0.8
         now = time.monotonic()
@@ -233,13 +235,15 @@ class DataFetcher:
             return "sh"
         return "sz"
 
-    def _tencent_kline(self, code: str, days: int = 60) -> "pd.DataFrame":
+    def _tencent_kline(self, code: str, days: int = 60) -> Any:
         """通过腾讯接口获取 A 股前复权日 K 线，返回 DataFrame。
 
         列: 日期, 开盘, 收盘, 最高, 最低, 成交量
         """
-        import requests, json
+        import json
+
         import pandas as pd
+        import requests
 
         prefix = self._tencent_code_prefix(code)
         url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
@@ -306,13 +310,13 @@ class DataFetcher:
             "流通市值": _safe_float(44),
         }
 
-    def _tencent_stock_list(self) -> "pd.DataFrame":
+    def _tencent_stock_list(self) -> Any:
         """通过腾讯接口获取 A 股列表（名称+代码），用于名称解析缓存。
 
         返回 DataFrame 列: 代码, 名称
         """
-        import requests, json
         import pandas as pd
+        import requests
 
         all_rows = []
         for market in ("sh", "sz"):
@@ -337,16 +341,356 @@ class DataFetcher:
 
         return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
+    @staticmethod
+    def _is_missing(value: Any) -> bool:
+        return value is None or value == "" or value != value
+
+    @classmethod
+    def _format_value(cls, value: Any, digits: int = 2) -> str:
+        if cls._is_missing(value):
+            return "N/A"
+        if isinstance(value, int):
+            return f"{value:,}"
+        if isinstance(value, float):
+            return f"{value:,.{digits}f}"
+        return str(value)
+
+    @staticmethod
+    def _format_date_value(value: Any) -> str:
+        if value is None or value != value:
+            return "N/A"
+        if hasattr(value, "strftime"):
+            return value.strftime("%Y-%m-%d")
+        return str(value)
+
+    @staticmethod
+    def _prepare_price_frame(df: Any) -> Any:
+        import pandas as pd
+
+        if df is None or getattr(df, "empty", True):
+            return pd.DataFrame()
+
+        frame = df.copy()
+        if "日期" not in frame.columns:
+            if "date" in frame.columns:
+                frame["日期"] = frame["date"]
+            elif "Date" in frame.columns:
+                frame["日期"] = frame["Date"]
+            else:
+                frame = frame.reset_index()
+                frame["日期"] = frame.iloc[:, 0]
+
+        aliases = {
+            "Open": "开盘",
+            "High": "最高",
+            "Low": "最低",
+            "Close": "收盘",
+            "Volume": "成交量",
+            "Amount": "成交额",
+        }
+        for source, target in aliases.items():
+            if source in frame.columns and target not in frame.columns:
+                frame[target] = frame[source]
+
+        frame["日期"] = pd.to_datetime(frame["日期"], errors="coerce")
+        for column in ("开盘", "收盘", "最高", "最低", "成交量", "成交额", "涨跌幅"):
+            if column in frame.columns:
+                frame[column] = pd.to_numeric(frame[column], errors="coerce")
+
+        for column in ("开盘", "收盘", "最高", "最低", "成交量", "成交额", "涨跌幅"):
+            if column not in frame.columns:
+                frame[column] = pd.NA
+
+        frame = (
+            frame.dropna(subset=["日期", "收盘"])
+            .sort_values("日期")
+            .reset_index(drop=True)
+        )
+        return frame[
+            ["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "涨跌幅"]
+        ]
+
+    @classmethod
+    def _resample_price_frame(cls, df: Any, rule: str) -> Any:
+        prepared = cls._prepare_price_frame(df)
+        if prepared.empty:
+            return prepared
+
+        source = prepared.set_index("日期")
+        resampled = (
+            source.resample(rule)
+            .agg(
+                {
+                    "开盘": "first",
+                    "收盘": "last",
+                    "最高": "max",
+                    "最低": "min",
+                    "成交量": "sum",
+                    "成交额": "sum",
+                }
+            )
+            .dropna(subset=["收盘"])
+            .reset_index()
+        )
+        prev_close = resampled["收盘"].shift(1)
+        resampled["涨跌幅"] = (
+            (resampled["收盘"] - prev_close) / prev_close * 100
+        ).round(2)
+        return resampled
+
+    @classmethod
+    def _build_multi_timeframe_section(
+        cls, daily_df: Any, weekly_df: Any, monthly_df: Any
+    ) -> str:
+        frames = [
+            ("日线", cls._prepare_price_frame(daily_df), 20),
+            ("周线", cls._prepare_price_frame(weekly_df), 8),
+            ("月线", cls._prepare_price_frame(monthly_df), 6),
+        ]
+
+        rows: list[str] = []
+        for label, frame, lookback in frames:
+            if frame.empty:
+                rows.append(f"| {label} | N/A | N/A | N/A | N/A | N/A | 无数据 |")
+                continue
+
+            latest = frame.iloc[-1]
+            prev = frame.iloc[-2] if len(frame) > 1 else latest
+            ma5 = frame["收盘"].tail(min(5, len(frame))).mean()
+            base = frame["收盘"].tail(min(lookback + 1, len(frame))).iloc[0]
+            latest_close = latest["收盘"]
+            period_change = (
+                (latest_close - prev["收盘"]) / prev["收盘"] * 100
+                if len(frame) > 1 and prev["收盘"]
+                else 0
+            )
+            range_change = (
+                (latest_close - base) / base * 100 if base and base == base else 0
+            )
+
+            if latest_close >= ma5 and latest_close >= prev["收盘"]:
+                trend = "偏强"
+            elif latest_close < ma5 and latest_close < prev["收盘"]:
+                trend = "偏弱"
+            else:
+                trend = "震荡"
+
+            rows.append(
+                "| "
+                + " | ".join(
+                    [
+                        label,
+                        cls._format_date_value(latest["日期"]),
+                        cls._format_value(latest_close),
+                        f"{period_change:+.2f}%",
+                        f"{range_change:+.2f}%",
+                        cls._format_value(ma5),
+                        trend,
+                    ]
+                )
+                + " |"
+            )
+
+        return """### 多周期趋势
+| 周期 | 最新日期 | 最新收盘 | 单周期涨跌 | 区间涨跌 | 5周期均线 | 趋势判断 |
+|------|----------|----------|------------|----------|-----------|----------|
+""" + "\n".join(rows)
+
+    @classmethod
+    def _build_recent_trading_days_section(cls, df: Any, prefix: str = "") -> str:
+        frame = cls._prepare_price_frame(df)
+        if frame.empty:
+            return "### 最近5个交易日\n暂无历史K线数据\n"
+
+        lines = ["### 最近5个交易日"]
+        for _, row in frame.tail(5).iterrows():
+            close = cls._format_value(row["收盘"])
+            pct = row["涨跌幅"]
+            pct_text = f"{pct:+.2f}%" if not cls._is_missing(pct) else "N/A"
+            lines.append(
+                f"- **{cls._format_date_value(row['日期'])}**: 收{prefix}{close} ({pct_text})"
+            )
+        return "\n".join(lines)
+
+    @classmethod
+    def _build_latest_quote_table(cls, df: Any) -> str:
+        frame = cls._prepare_price_frame(df)
+        if frame.empty:
+            return "### 近期行情\n暂无近期行情数据\n"
+
+        latest = frame.iloc[-1]
+        prev = frame.iloc[-2] if len(frame) > 1 else latest
+        pct_change = (
+            (latest["收盘"] - prev["收盘"]) / prev["收盘"] * 100
+            if len(frame) > 1 and prev["收盘"]
+            else 0
+        )
+        return f"""### 近期行情
+| 日期 | 开盘 | 收盘 | 最高 | 最低 | 成交量 | 成交额 | 涨跌幅 |
+|------|------|------|------|------|--------|--------|--------|
+| {cls._format_date_value(latest["日期"])} | {cls._format_value(latest["开盘"])} | {cls._format_value(latest["收盘"])} | {cls._format_value(latest["最高"])} | {cls._format_value(latest["最低"])} | {cls._format_value(latest["成交量"], digits=0)} | {cls._format_value(latest["成交额"])} | {pct_change:+.2f}% |
+"""
+
+    @classmethod
+    def _summarize_valuation_frame(
+        cls, df: Any, indicator_name: str, trade_date: str
+    ) -> dict[str, Any] | None:
+        import pandas as pd
+
+        if df is None or getattr(df, "empty", True):
+            return None
+
+        frame = df.copy()
+        if "date" not in frame.columns or "value" not in frame.columns:
+            return None
+
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
+        cutoff = pd.to_datetime(trade_date, errors="coerce")
+        frame = frame.dropna(subset=["date", "value"])
+        if cutoff == cutoff:
+            frame = frame[frame["date"] <= cutoff]
+        if frame.empty:
+            return None
+
+        current_value = frame.iloc[-1]["value"]
+        percentile = (frame["value"] <= current_value).mean() * 100
+        return {
+            "indicator": indicator_name,
+            "latest_date": frame.iloc[-1]["date"],
+            "current": current_value,
+            "percentile": percentile,
+            "min": frame["value"].min(),
+            "max": frame["value"].max(),
+            "median": frame["value"].median(),
+            "samples": len(frame),
+        }
+
+    async def _get_baidu_valuation_section(
+        self,
+        market: str,
+        symbol: str,
+        trade_date: str,
+        period: str,
+        source_label: str | None = None,
+    ) -> str:
+        if not self.akshare_available:
+            return ""
+
+        try:
+            import akshare as ak
+        except ImportError:
+            return ""
+
+        market_fetchers = {
+            "CN": (
+                ak.stock_zh_valuation_baidu,
+                {
+                    "市盈率(TTM)": ("市盈率(TTM)", "value"),
+                    "市净率": ("市净率", "value"),
+                },
+                "百度股市通",
+            ),
+            "HK": (
+                ak.stock_hk_indicator_eniu,
+                {
+                    "市盈率(TTM)": ("市盈率", "pe"),
+                    "市净率": ("市净率", "pb"),
+                },
+                "亿牛网",
+            ),
+            "US": (
+                ak.stock_us_valuation_baidu,
+                {
+                    "市盈率(TTM)": ("市盈率(TTM)", "value"),
+                    "市净率": ("市净率", "value"),
+                },
+                "百度股市通",
+            ),
+        }
+        market_fetcher = market_fetchers.get(market)
+        if market_fetcher is None:
+            return ""
+        fetcher, indicators, resolved_source_label = market_fetcher
+        source_label = source_label or resolved_source_label
+
+        summaries = []
+        for indicator_name, (raw_indicator, value_column) in indicators.items():
+            try:
+                if market == "HK":
+                    valuation_df = await self._run_akshare(
+                        fetcher,
+                        symbol=f"hk{symbol}",
+                        indicator=raw_indicator,
+                        timeout=30,
+                    )
+                else:
+                    valuation_df = await self._run_akshare(
+                        fetcher,
+                        symbol=symbol,
+                        indicator=raw_indicator,
+                        period=period,
+                        timeout=30,
+                    )
+                if value_column != "value" and value_column in valuation_df.columns:
+                    valuation_df = valuation_df.rename(columns={value_column: "value"})
+                summary = self._summarize_valuation_frame(
+                    valuation_df, indicator_name, trade_date
+                )
+                if summary:
+                    summaries.append(summary)
+            except Exception as exc:
+                logger.warning(
+                    f"获取{market} {symbol} {indicator_name}估值序列失败: {exc}"
+                )
+
+        if not summaries:
+            return ""
+
+        import pandas as pd
+
+        latest_date = max(item["latest_date"] for item in summaries)
+        trade_dt = pd.to_datetime(trade_date, errors="coerce")
+        is_stale = bool(
+            trade_dt == trade_dt
+            and latest_date == latest_date
+            and (trade_dt - latest_date).days > 45
+        )
+        value_header = "最近可用值" if is_stale else "当前值"
+        section = f"""### 估值历史分位（{source_label}）
+| 指标 | {value_header} | 历史分位 | 历史中位数 | 历史最小值 | 历史最大值 | 样本数 |
+|------|-------------|----------|------------|------------|------------|--------|
+"""
+        for item in summaries:
+            section += (
+                f"| {item['indicator']} | "
+                f"{self._format_value(item['current'])} | "
+                f"{item['percentile']:.1f}% | "
+                f"{self._format_value(item['median'])} | "
+                f"{self._format_value(item['min'])} | "
+                f"{self._format_value(item['max'])} | "
+                f"{item['samples']} |\n"
+            )
+
+        section += (
+            f"\n*估值序列截至 {self._format_date_value(latest_date)}，"
+            f"统计区间: {period}。*\n"
+        )
+        if is_stale:
+            section += (
+                "*⚠️ 该估值序列最新日期明显早于分析日，仅适合作为长期历史区间参考，"
+                "不应直接视为实时估值。*\n"
+            )
+        return section
+
     @property
     def akshare_available(self) -> bool:
         """检查akshare是否可用"""
         if self._akshare_available is None:
-            try:
-                import akshare
-
+            if find_spec("akshare") is not None:
                 self._akshare_available = True
                 logger.info("akshare 已可用")
-            except ImportError:
+            else:
                 self._akshare_available = False
                 logger.warning("akshare 未安装")
         return self._akshare_available
@@ -355,12 +699,10 @@ class DataFetcher:
     def yfinance_available(self) -> bool:
         """检查yfinance是否可用"""
         if self._yfinance_available is None:
-            try:
-                import yfinance
-
+            if find_spec("yfinance") is not None:
                 self._yfinance_available = True
                 logger.info("yfinance 已可用")
-            except ImportError:
+            else:
                 self._yfinance_available = False
                 logger.warning("yfinance 未安装")
         return self._yfinance_available
@@ -396,25 +738,24 @@ class DataFetcher:
             return f"获取市场数据失败: {str(e)}"
 
     async def _get_china_market_data(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取A股市场数据（带重试机制 + 腾讯接口降级）"""
         if not self.akshare_available:
             return "akshare未安装，无法获取A股数据"
 
         from .utils.stock_utils import StockUtils
-        import asyncio
 
         try:
-            import pandas as pd
-
             code = StockUtils.strip_market_prefix(ticker)
 
             end_date = datetime.strptime(trade_date, "%Y-%m-%d")
-            start_date = end_date - timedelta(days=30)
+            start_date = end_date - timedelta(days=400)
 
             # 重试机制 - 最多尝试3次（优先直连东方财富，再降级腾讯）
             df = None
+            weekly_df = None
+            monthly_df = None
             last_error = None
             use_tencent = False  # 标记是否使用了腾讯源
 
@@ -432,6 +773,24 @@ class DataFetcher:
                         timeout=30,
                     )
                     if df is not None and not df.empty:
+                        weekly_df = await self._run_blocking(
+                            self._eastmoney_stock_zh_a_hist,
+                            code,
+                            start_date.strftime("%Y%m%d"),
+                            end_date.strftime("%Y%m%d"),
+                            "qfq",
+                            "weekly",
+                            timeout=30,
+                        )
+                        monthly_df = await self._run_blocking(
+                            self._eastmoney_stock_zh_a_hist,
+                            code,
+                            start_date.strftime("%Y%m%d"),
+                            end_date.strftime("%Y%m%d"),
+                            "qfq",
+                            "monthly",
+                            timeout=30,
+                        )
                         logger.info(f"成功获取A股数据(东方财富直连): {code}")
                         break
                     last_error = "东方财富返回空数据"
@@ -461,6 +820,8 @@ class DataFetcher:
                         # 添加「成交额」列（近似 = 收盘 * 成交量）
                         if "成交额" not in df.columns:
                             df["成交额"] = (df["收盘"] * df["成交量"]).round(2)
+                        weekly_df = self._resample_price_frame(df, "W-FRI")
+                        monthly_df = self._resample_price_frame(df, "ME")
                         logger.info(f"成功获取A股数据(腾讯接口): {code}, {len(df)}条")
                 except Exception as e:
                     logger.warning(f"腾讯接口也失败: {e}")
@@ -478,21 +839,13 @@ class DataFetcher:
 无法从数据源获取{code}的行情数据。
 原因: {last_error or "未知错误"}
 
-**建议**: 
+**建议**:
 1. 检查网络连接
 2. 稍后重试
 3. 股票代码可能不存在或已停牌
 
 ---
 *数据来源: akshare / 腾讯财经*"""
-
-            # 获取最新数据
-            latest = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else latest
-
-            # 计算涨跌
-            price_change = latest["收盘"] - prev["收盘"]
-            pct_change = (price_change / prev["收盘"] * 100) if prev["收盘"] != 0 else 0
 
             source_tag = "腾讯财经" if use_tencent else "东方财富"
             result = f"""## A股市场数据
@@ -504,20 +857,15 @@ class DataFetcher:
 **货币**: {market_info["currency_name"]}（{market_info["currency_symbol"]}）
 **数据源**: {source_tag}
 
-### 近期行情
-| 日期 | 开盘 | 收盘 | 最高 | 最低 | 成交量 | 成交额 | 涨跌幅 |
-|------|------|------|------|------|--------|--------|--------|
-| {latest["日期"]} | {latest["开盘"]} | {latest["收盘"]} | {latest["最高"]} | {latest["最低"]} | {latest["成交量"]} | {latest.get("成交额", "N/A")} | {pct_change:.2f}% |
+{self._build_latest_quote_table(df)}
 
-### 最近5个交易日
+{self._build_recent_trading_days_section(df)}
 """
-
-            for idx, row in df.tail(5).iterrows():
-                _pct = row["涨跌幅"]
-                _pct_str = (
-                    f"{_pct:+.2f}" if isinstance(_pct, (int, float)) else str(_pct)
-                )
-                result += f"- **{row['日期']}**: 收{row['收盘']} ({_pct_str}%)\n"
+            result += (
+                "\n"
+                + self._build_multi_timeframe_section(df, weekly_df, monthly_df)
+                + "\n"
+            )
 
             # 获取实时行情
             if use_tencent:
@@ -584,7 +932,7 @@ class DataFetcher:
         return code.zfill(5)
 
     async def _get_hk_market_data(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取港股市场数据（akshare实时行情 + 历史K线）"""
         if not self.akshare_available:
@@ -592,7 +940,6 @@ class DataFetcher:
 
         try:
             import akshare as ak
-            import pandas as pd
 
             # 提取纯数字代码（0700.HK → 0700）
             code = ticker.replace(".HK", "").replace("HK", "").replace(".", "")
@@ -638,7 +985,7 @@ class DataFetcher:
             hist_text = ""
             try:
                 end_date = datetime.strptime(trade_date, "%Y-%m-%d")
-                start_date = end_date - timedelta(days=60)  # 多取一些确保有足够交易日
+                start_date = end_date - timedelta(days=400)
 
                 hist_df = await self._run_akshare(
                     ak.stock_hk_hist,
@@ -649,27 +996,35 @@ class DataFetcher:
                     adjust="qfq",
                     timeout=30,
                 )
+                weekly_df = await self._run_akshare(
+                    ak.stock_hk_hist,
+                    symbol=padded_code,
+                    period="weekly",
+                    start_date=start_date.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                    adjust="qfq",
+                    timeout=30,
+                )
+                monthly_df = await self._run_akshare(
+                    ak.stock_hk_hist,
+                    symbol=padded_code,
+                    period="monthly",
+                    start_date=start_date.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                    adjust="qfq",
+                    timeout=30,
+                )
 
                 if hist_df is not None and not hist_df.empty:
-                    # 最近5个交易日摘要
-                    hist_text = "### 最近5个交易日\n"
-                    for idx, row in hist_df.tail(5).iterrows():
-                        date_str = row.get("日期", "N/A")
-                        close = row.get("收盘", "N/A")
-                        pct = row.get("涨跌幅", "N/A")
-                        _pct_str = (
-                            f"{pct:+.2f}" if isinstance(pct, (int, float)) else str(pct)
+                    hist_text = (
+                        self._build_latest_quote_table(hist_df)
+                        + "\n\n"
+                        + self._build_recent_trading_days_section(hist_df)
+                        + "\n\n"
+                        + self._build_multi_timeframe_section(
+                            hist_df, weekly_df, monthly_df
                         )
-                        hist_text += f"- **{date_str}**: 收{close} ({_pct_str}%)\n"
-
-                    # 近期行情表（最新一天）
-                    latest = hist_df.iloc[-1]
-                    hist_text += f"""
-### 近期行情
-| 日期 | 开盘 | 收盘 | 最高 | 最低 | 成交量 | 成交额 | 涨跌幅 |
-|------|------|------|------|------|--------|--------|--------|
-| {latest.get("日期", "N/A")} | {latest.get("开盘", "N/A")} | {latest.get("收盘", "N/A")} | {latest.get("最高", "N/A")} | {latest.get("最低", "N/A")} | {latest.get("成交量", "N/A")} | {latest.get("成交额", "N/A")} | {latest.get("涨跌幅", "N/A")}% |
-"""
+                    )
                 else:
                     hist_text = "### 历史K线\n暂无历史K线数据\n"
             except Exception as e:
@@ -698,7 +1053,7 @@ class DataFetcher:
             return f"获取港股数据失败: {str(e)}"
 
     async def _get_us_market_data(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取美股市场数据（akshare主数据源 + yfinance备选）"""
 
@@ -706,7 +1061,6 @@ class DataFetcher:
         if self.akshare_available:
             try:
                 import akshare as ak
-                import pandas as pd
 
                 # 获取实时行情
                 spot_df = await self._run_akshare(ak.stock_us_spot_em, timeout=30)
@@ -741,7 +1095,7 @@ class DataFetcher:
                         hist_text = ""
                         try:
                             end_date = datetime.strptime(trade_date, "%Y-%m-%d")
-                            start_date = end_date - timedelta(days=60)
+                            start_date = end_date - timedelta(days=400)
 
                             hist_df = await self._run_akshare(
                                 ak.stock_us_hist,
@@ -752,21 +1106,38 @@ class DataFetcher:
                                 adjust="qfq",
                                 timeout=30,
                             )
+                            weekly_df = await self._run_akshare(
+                                ak.stock_us_hist,
+                                symbol=ak_code,
+                                period="weekly",
+                                start_date=start_date.strftime("%Y%m%d"),
+                                end_date=end_date.strftime("%Y%m%d"),
+                                adjust="qfq",
+                                timeout=30,
+                            )
+                            monthly_df = await self._run_akshare(
+                                ak.stock_us_hist,
+                                symbol=ak_code,
+                                period="monthly",
+                                start_date=start_date.strftime("%Y%m%d"),
+                                end_date=end_date.strftime("%Y%m%d"),
+                                adjust="qfq",
+                                timeout=30,
+                            )
 
                             if hist_df is not None and not hist_df.empty:
-                                hist_text = "\n### 最近5个交易日\n"
-                                for idx, hrow in hist_df.tail(5).iterrows():
-                                    date_str = hrow.get("日期", "N/A")
-                                    close = hrow.get("收盘", "N/A")
-                                    pct = hrow.get("涨跌幅", "N/A")
-                                    _pct_str = (
-                                        f"{pct:+.2f}"
-                                        if isinstance(pct, (int, float))
-                                        else str(pct)
+                                hist_text = (
+                                    "\n"
+                                    + self._build_latest_quote_table(hist_df)
+                                    + "\n\n"
+                                    + self._build_recent_trading_days_section(
+                                        hist_df, prefix="$"
                                     )
-                                    hist_text += (
-                                        f"- **{date_str}**: 收${close} ({_pct_str}%)\n"
+                                    + "\n\n"
+                                    + self._build_multi_timeframe_section(
+                                        hist_df, weekly_df, monthly_df
                                     )
+                                )
                         except Exception as e:
                             logger.warning(f"获取美股历史K线失败(akshare): {e}")
                             hist_text = "\n### 历史K线\n获取失败\n"
@@ -798,25 +1169,25 @@ class DataFetcher:
 
             # 获取历史数据
             end_date = datetime.strptime(trade_date, "%Y-%m-%d")
-            start_date = end_date - timedelta(days=30)
+            start_date = end_date - timedelta(days=400)
             hist = await self._run_blocking(
                 stock.history, start=start_date, end=end_date, timeout=30
             )
 
             hist_text = ""
             if hist is not None and not hist.empty:
-                # 预计算涨跌幅（Series 级别），避免在 iterrows 行上调用 pct_change()
-                close_pct = hist["Close"].pct_change() * 100
-                hist_text = "### 最近5个交易日\n"
-                for idx, row in hist.tail(5).iterrows():
-                    date_str = idx.strftime("%Y-%m-%d")
-                    close = row["Close"]
-                    pct = close_pct.loc[idx] if idx in close_pct.index else 0
-                    pct = 0 if (pct != pct) else pct  # NaN guard
-                    _pct_str = (
-                        f"{pct:+.2f}" if isinstance(pct, (int, float)) else str(pct)
-                    )
-                    hist_text += f"- **{date_str}**: 收${close:.2f} ({_pct_str}%)\n"
+                hist = hist.copy().reset_index()
+                if "Close" in hist.columns:
+                    hist["涨跌幅"] = (hist["Close"].pct_change() * 100).round(2)
+                weekly_df = self._resample_price_frame(hist, "W-FRI")
+                monthly_df = self._resample_price_frame(hist, "ME")
+                hist_text = (
+                    self._build_latest_quote_table(hist)
+                    + "\n\n"
+                    + self._build_recent_trading_days_section(hist, prefix="$")
+                    + "\n\n"
+                    + self._build_multi_timeframe_section(hist, weekly_df, monthly_df)
+                )
 
             return f"""## 美股市场数据
 
@@ -875,7 +1246,7 @@ class DataFetcher:
             return f"获取基本面数据失败: {str(e)}"
 
     async def _get_china_fundamentals(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取A股基本面数据"""
         if not self.akshare_available:
@@ -957,6 +1328,15 @@ class DataFetcher:
                             else:
                                 result += f"| {display_name} | N/A |\n"
 
+                valuation_section = await self._get_baidu_valuation_section(
+                    market="CN",
+                    symbol=code,
+                    trade_date=trade_date,
+                    period="近五年",
+                )
+                if valuation_section:
+                    result += f"\n{valuation_section}\n"
+
                 return result
 
             except Exception as e:
@@ -969,7 +1349,7 @@ class DataFetcher:
             return f"获取A股基本面失败: {str(e)}"
 
     async def _get_hk_fundamentals(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取港股基本面数据（akshare公司信息 + yfinance估值/财务）"""
         code = ticker.replace(".HK", "").replace("HK", "").replace(".", "")
@@ -981,6 +1361,12 @@ class DataFetcher:
 **股票代码**: {code}.HK
 **分析日期**: {trade_date}
 """)
+        baidu_valuation = await self._get_baidu_valuation_section(
+            market="HK",
+            symbol=padded_code,
+            trade_date=trade_date,
+            period="近三年",
+        )
 
         # === 1. akshare: 雪球公司基本信息 ===
         if self.akshare_available:
@@ -1129,10 +1515,13 @@ class DataFetcher:
             )
             result_parts.append("\n*数据来源: akshare（雪球）*\n")
 
+        if baidu_valuation:
+            result_parts.append(baidu_valuation)
+
         return "\n".join(result_parts)
 
     async def _get_us_fundamentals(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取美股基本面数据（yfinance主 + akshare公司信息补充）"""
         result_parts = []
@@ -1141,6 +1530,12 @@ class DataFetcher:
 **股票代码**: {ticker}
 **分析日期**: {trade_date}
 """)
+        baidu_valuation = await self._get_baidu_valuation_section(
+            market="US",
+            symbol=ticker,
+            trade_date=trade_date,
+            period="近三年",
+        )
 
         # === 1. akshare: 雪球公司信息补充 ===
         if self.akshare_available:
@@ -1235,6 +1630,9 @@ class DataFetcher:
         else:
             result_parts.append("\n⚠️ yfinance未安装，无法获取估值和财务数据\n")
 
+        if baidu_valuation:
+            result_parts.append(baidu_valuation)
+
         return "\n".join(result_parts)
 
     async def get_news(self, ticker: str, trade_date: str) -> str:
@@ -1259,7 +1657,7 @@ class DataFetcher:
             return f"获取新闻数据失败: {str(e)}"
 
     async def _get_china_news(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取A股新闻"""
         if not self.akshare_available:
@@ -1283,7 +1681,6 @@ class DataFetcher:
                     for idx, row in news_df.head(10).iterrows():
                         news_time = row.get("发布时间", "N/A")
                         news_title = row.get("新闻标题", "N/A")
-                        news_url = row.get("链接", "")
                         news_text += f"- **{news_time}**: {news_title}\n"
 
                     return news_text
@@ -1299,7 +1696,7 @@ class DataFetcher:
             return f"获取A股新闻失败: {str(e)}"
 
     async def _get_hk_news(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取港股新闻（yfinance）"""
         code = ticker.replace(".HK", "").replace("HK", "").replace(".", "")
@@ -1350,7 +1747,7 @@ class DataFetcher:
             return f"暂无港股新闻数据（获取失败: {str(e)}）"
 
     async def _get_us_news(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取美股新闻"""
         if not self.yfinance_available:
@@ -1402,7 +1799,7 @@ class DataFetcher:
             return f"获取情绪数据失败: {str(e)}"
 
     async def _get_china_sentiment(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取A股情绪数据"""
         # A股情绪数据（东方财富等）
@@ -1458,7 +1855,7 @@ class DataFetcher:
             return f"获取A股情绪失败: {str(e)}"
 
     async def _get_hk_sentiment(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取港股情绪数据（yfinance 分析师评级 + 推荐）"""
         code = ticker.replace(".HK", "").replace("HK", "").replace(".", "")
@@ -1532,7 +1929,7 @@ class DataFetcher:
             return f"暂无港股情绪数据（获取失败: {str(e)}）"
 
     async def _get_us_sentiment(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取美股情绪数据"""
         if not self.yfinance_available:
@@ -1589,18 +1986,16 @@ class DataFetcher:
     # ==================== ETF 数据获取方法 ====================
 
     async def _get_etf_market_data(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取ETF市场数据（fund_etf_hist_em + fund_etf_spot_em）"""
         if not self.akshare_available:
             return "akshare未安装，无法获取ETF数据"
 
         from .utils.stock_utils import StockUtils
-        import asyncio
 
         try:
             import akshare as ak
-            import pandas as pd
 
             code = StockUtils.strip_market_prefix(ticker)
 
@@ -1780,7 +2175,7 @@ class DataFetcher:
             return f"获取ETF市场数据失败: {str(e)}"
 
     async def _get_etf_fundamentals(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取ETF基本面数据（基金信息 + NAV + 持仓）"""
         from .utils.stock_utils import StockUtils
@@ -1938,7 +2333,7 @@ class DataFetcher:
         return "\n".join(result_parts)
 
     async def _get_etf_news(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取ETF新闻数据（复用A股新闻接口，如失败则提供ETF概要）"""
         from .utils.stock_utils import StockUtils
@@ -1985,7 +2380,7 @@ class DataFetcher:
 """
 
     async def _get_etf_sentiment(
-        self, ticker: str, trade_date: str, market_info: Dict
+        self, ticker: str, trade_date: str, market_info: dict
     ) -> str:
         """获取ETF情绪数据（资金流向 + 折溢价 + 主力动向）"""
         from .utils.stock_utils import StockUtils
@@ -2137,7 +2532,7 @@ class DataFetcher:
 
         return "\n".join(result_parts)
 
-    async def fetch_all_data(self, ticker: str, trade_date: str) -> Dict:
+    async def fetch_all_data(self, ticker: str, trade_date: str) -> dict:
         """
         一次性并发获取所有信息源数据，并检查数据完整性。
 
@@ -2229,7 +2624,7 @@ class DataFetcher:
             "error_details": error_details,
         }
 
-    def _check_data_valid(self, data: str, source_name: str) -> Dict[str, bool | str]:
+    def _check_data_valid(self, data: str, source_name: str) -> dict[str, bool | str]:
         """
         检查数据是否有效（非空、非失败信息）。
 
