@@ -1,45 +1,48 @@
 """
 风险裁判 - 负责评估整体投资风险并给出风险等级
 """
-from typing import Dict
+
 
 from astrbot.api import logger
+
+from ..personas import PERSONA_RISK_JUDGE
 
 
 class RiskJudge:
     """风险裁判 - 评估整体投资风险"""
-    
+
     def __init__(self, llm, data_fetcher):
         self.llm = llm
         self.data_fetcher = data_fetcher
-    
-    async def assess_risk(self, ticker: str, trade_date: str, context: Dict, 
-                         debate_report: str) -> str:
+
+    async def assess_risk(
+        self, ticker: str, trade_date: str, context: dict, debate_report: str
+    ) -> str:
         """
         评估投资风险
-        
+
         Args:
             ticker: 股票代码
             trade_date: 交易日期
             context: 包含市场分析、基本面分析、新闻分析等上下文
             debate_report: 辩论综合报告
-            
+
         Returns:
             风险评估报告
         """
         logger.info(f"风险裁判开始评估风险: {ticker}")
-        
+
         from ..utils.stock_utils import StockUtils
-        
+
         market_info = StockUtils.get_market_info(ticker)
-        normalized_ticker = market_info['normalized_ticker']
+        normalized_ticker = market_info["normalized_ticker"]
         stock_name = StockUtils.get_stock_name(ticker)
-        
+
         # 获取市场数据用于风险评估
         market_data = await self.data_fetcher.get_market_data(
             normalized_ticker, trade_date
         )
-        
+
         prompt = self._build_risk_prompt(
             ticker=normalized_ticker,
             stock_name=stock_name,
@@ -47,17 +50,23 @@ class RiskJudge:
             market_info=market_info,
             market_data=market_data,
             context=context,
-            debate_report=debate_report
+            debate_report=debate_report,
         )
-        
-        response = await self.llm.ask(prompt)
-        
+
+        response = await self.llm.ask(prompt, persona_id=PERSONA_RISK_JUDGE)
+
         logger.info(f"风险裁判完成风险评估: {ticker}")
-        
+
         return response
-    
-    async def assess_risk_with_data(self, ticker: str, trade_date: str, context: Dict,
-                                     debate_report: str, market_data_raw) -> str:
+
+    async def assess_risk_with_data(
+        self,
+        ticker: str,
+        trade_date: str,
+        context: dict,
+        debate_report: str,
+        market_data_raw,
+    ) -> str:
         """
         使用预获取的市场数据评估投资风险（不再重新获取数据）
 
@@ -76,7 +85,7 @@ class RiskJudge:
         from ..utils.stock_utils import StockUtils
 
         market_info = StockUtils.get_market_info(ticker)
-        normalized_ticker = market_info['normalized_ticker']
+        normalized_ticker = market_info["normalized_ticker"]
         stock_name = StockUtils.get_stock_name(ticker)
 
         prompt = self._build_risk_prompt(
@@ -86,65 +95,70 @@ class RiskJudge:
             market_info=market_info,
             market_data=market_data_raw,
             context=context,
-            debate_report=debate_report
+            debate_report=debate_report,
         )
 
-        response = await self.llm.ask(prompt)
+        response = await self.llm.ask(prompt, persona_id=PERSONA_RISK_JUDGE)
 
         logger.info(f"风险裁判完成风险评估: {ticker}")
 
         return response
-    
-    def _build_risk_prompt(self, ticker: str, stock_name: str, trade_date: str,
-                          market_info: Dict, market_data: Dict, 
-                          context: Dict, debate_report: str) -> str:
+
+    def _build_risk_prompt(
+        self,
+        ticker: str,
+        stock_name: str,
+        trade_date: str,
+        market_info: dict,
+        market_data: dict,
+        context: dict,
+        debate_report: str,
+    ) -> str:
         """构建风险评估提示词"""
-        
+
         # 提取市场数据的关键风险指标
         volatility = "未知"
         volume_ratio = "未知"
-        
-        if market_data and 'data' in market_data:
-            data = market_data.get('data', {})
-            if 'volatility' in data:
-                volatility = data.get('volatility', '未知')
-            if 'volume_ratio' in data:
-                volume_ratio = data.get('volume_ratio', '未知')
-        
+
+        if market_data and "data" in market_data:
+            data = market_data.get("data", {})
+            if "volatility" in data:
+                volatility = data.get("volatility", "未知")
+            if "volume_ratio" in data:
+                volume_ratio = data.get("volume_ratio", "未知")
+
         # 判断是否为快速分析模式（无多空辩论）
         is_quick_mode = not debate_report or "快速分析模式" in debate_report
-        
+
         if is_quick_mode:
             debate_section = """## 分析模式
 本次为快速分析模式，未进行多空辩论。请直接基于以下市场技术面分析、基本面分析和新闻面分析进行综合风险评估。"""
         else:
             debate_section = f"""## 辩论综合报告
 {debate_report}"""
-        
-        return f"""你是一位资深的风险管理专家，负责评估股票的整体投资风险。
 
-## 股票信息
+        return f"""## 股票信息
 - 股票名称：{stock_name}
 - 股票代码：{ticker}
-- 市场：{market_info['market_name']}
+- 市场：{market_info["market_name"]}
 - 交易日期：{trade_date}
 
 ## 市场数据摘要
 - 波动率：{volatility}
 - 量比：{volume_ratio}
-- 市场：{market_info['market_name']}
+- 市场：{market_info["market_name"]}
 
 {debate_section}
 
 ## 已有分析背景
 ### 市场技术面分析
-{context.get('market_analysis', '暂无市场技术面分析')}
+{context.get("market_analysis", "暂无市场技术面分析")}
 
 ### 基本面分析
-{context.get('fundamentals_analysis', '暂无基本面分析')}
+{context.get("fundamentals_analysis", "暂无基本面分析")}
 
 ### 新闻面分析
-{context.get('news_analysis', '暂无新闻面分析')}
+{context.get("news_analysis", "暂无新闻面分析")}
 
 ## 你的任务
 请进行全面的风险评估：
@@ -177,10 +191,4 @@ class RiskJudge:
 ## 📋 投资风险总结
 [总结整体风险状况和投资建议]
 
----
-重要提醒：
-- 必须使用上述格式输出
-- 给出明确的风险等级
-- 区分不同级别的风险因素
-- 提供具体的风险缓解建议
 """

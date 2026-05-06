@@ -3,38 +3,48 @@
 import os
 import re
 
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api import logger, AstrBotConfig
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.star import Context, Star
 
-from .trading_graph_langgraph import TradingGraphLangGraph as FinancialAssistantGraph
 from .data_fetcher import DataFetcher
 from .llm_client import OpenAICompatibleLLM
+from .personas import PERSONA_STOCK_RESOLVER, TradingAgentsPersonaRegistry
+from .trading_graph_langgraph import TradingGraphLangGraph as FinancialAssistantGraph
+from .utils.report_utils import (
+    check_pdf_available,
+    extract_conclusion,
+    save_report_md,
+    save_report_pdf,
+    save_report_txt,
+)
 from .utils.stock_utils import StockUtils
-from .utils.report_utils import extract_conclusion, save_report_pdf, save_report_md, save_report_txt, check_pdf_available
 
 
 class TradingAssistantPlugin(Star):
     """金融助手插件"""
-    
+
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         logger.info("TradingAssistantPlugin 初始化中...")
         self.config = config or {}
-        
+
         # 从插件配置读取API配置
         self.api_key = None
         self.api_base = None
         self.model = None
         self.reasoning = None
         self.llm = None
+        self.persona_registry = TradingAgentsPersonaRegistry(
+            self.context.persona_manager
+        )
 
         # 检查 PDF 依赖可用性
         self._pdf_available, self._pdf_unavailable_reason = check_pdf_available()
         self._export_txt = False
 
         # 读取 PDF 导出开关
-        self.export_pdf = self.config.get('export_pdf', True)
+        self.export_pdf = self.config.get("export_pdf", True)
 
         if not self._pdf_available:
             if self.export_pdf:
@@ -49,36 +59,49 @@ class TradingAssistantPlugin(Star):
                 )
             self.export_pdf = False
 
-        if not self.config.get('export_pdf', True) and not self._export_txt:
+        if not self.config.get("export_pdf", True) and not self._export_txt:
             logger.info("export_pdf 已关闭，报告将以 Markdown 分模块逐段发送。")
 
         # 初始化LLM配置
         self._init_llm_config()
-    
+
+    async def initialize(self) -> None:
+        """插件启动时同步所需 AstrBot 人格。"""
+        await self.persona_registry.ensure_personas()
+
     def _init_llm_config(self):
         """初始化LLM配置"""
         try:
-            self.api_key = self.config.get('api_key') or os.environ.get('TRADING_ASSISTANT_API_KEY', '')
-            self.api_base = self.config.get('api_base') or os.environ.get('TRADING_ASSISTANT_API_BASE', 'https://open.bigmodel.cn/api/paas/v4')
-            self.model = self.config.get('model') or os.environ.get('TRADING_ASSISTANT_MODEL', 'glm-4-flash')
-            self.reasoning = self.config.get('reasoning')
+            self.api_key = self.config.get("api_key") or os.environ.get(
+                "TRADING_ASSISTANT_API_KEY", ""
+            )
+            self.api_base = self.config.get("api_base") or os.environ.get(
+                "TRADING_ASSISTANT_API_BASE", "https://open.bigmodel.cn/api/paas/v4"
+            )
+            self.model = self.config.get("model") or os.environ.get(
+                "TRADING_ASSISTANT_MODEL", "glm-4-flash"
+            )
+            self.reasoning = self.config.get("reasoning")
             # REVIEW-NOTE: timeout_seconds 未做类型验证，依赖框架配置校验（实际风险极低）
-            self.timeout_seconds = int(self.config.get('timeout_seconds', 120))
-            
+            self.timeout_seconds = int(self.config.get("timeout_seconds", 120))
+
             if self.api_key:
-                logger.info(f"LLM配置已加载，模型: {self.model}, 超时: {self.timeout_seconds}s")
-                self.llm = OpenAICompatibleLLM(
+                logger.info(
+                    f"LLM配置已加载，模型: {self.model}, 超时: {self.timeout_seconds}s"
+                )
+                base_llm = OpenAICompatibleLLM(
                     api_key=self.api_key,
                     api_base=self.api_base,
                     model=self.model,
                     timeout_seconds=self.timeout_seconds,
                     reasoning=self.reasoning,
                 )
+                self.llm = self.persona_registry.wrap_llm(base_llm)
             else:
                 logger.warning("未配置 LLM API Key，部分功能可能不可用")
         except Exception as e:
             logger.error(f"初始化LLM配置失败: {e}")
-    
+
     @staticmethod
     def split_report_by_sections(report: str) -> list[str]:
         """将 Markdown 报告按 ## 标题拆分为多个段落，用于分模块发送（防截断）。
@@ -87,7 +110,7 @@ class TradingAssistantPlugin(Star):
           [标题+元信息, 市场技术面分析, 基本面分析, 新闻面分析, 多空辩论综合, 风险评估]
         """
         # 按「独占一行的 ## 」拆分，每段保留自身标题
-        parts = re.split(r'\n(?=## )', report)
+        parts = re.split(r"\n(?=## )", report)
 
         sections: list[str] = []
         for part in parts:
@@ -95,7 +118,7 @@ class TradingAssistantPlugin(Star):
             if not text:
                 continue
             # 跳过末尾的生成时间 / 免责声明（不以 # 开头且不是第一段）
-            if sections and not text.startswith('#'):
+            if sections and not text.startswith("#"):
                 continue
             sections.append(text)
 
@@ -105,10 +128,10 @@ class TradingAssistantPlugin(Star):
         """获取或创建LLM实例"""
         if self.llm is None:
             self._init_llm_config()
-        
+
         if self.llm is None:
             raise ValueError("LLM未配置，请在插件配置中填写 api_key 或设置对应环境变量")
-        
+
         return self.llm
 
     # REVIEW-NOTE: _extract_command_arg 当前实现功能正确且可读性好，removeprefix 简化为风格偏好，暂不修改
@@ -116,10 +139,10 @@ class TradingAssistantPlugin(Star):
     def _extract_command_arg(message_str: str, command_names: list[str]) -> str:
         cleaned = message_str.strip()
         for command_name in command_names:
-            for prefix in (f'/{command_name}', command_name):
+            for prefix in (f"/{command_name}", command_name):
                 if cleaned.startswith(prefix):
-                    rest = cleaned[len(prefix):]
-                    if not rest or rest[0] in (' ', '\t'):
+                    rest = cleaned[len(prefix) :]
+                    if not rest or rest[0] in (" ", "\t"):
                         return rest.strip()
         return cleaned
 
@@ -144,31 +167,20 @@ class TradingAssistantPlugin(Star):
                 logger.info(f"本地解析股票名称: '{raw_input}' → '{local_result}'")
                 return local_result
         except Exception as e:
-            logger.warning(f"本地股票名称解析异常，将回退到 LLM: {type(e).__name__}: {repr(e)}")
+            logger.warning(
+                f"本地股票名称解析异常，将回退到 LLM: {type(e).__name__}: {repr(e)}"
+            )
 
         # ---- 第二步：LLM 解析（覆盖港股/美股名称等本地无法处理的场景） ----
         llm = await self._get_llm()
 
-        prompt = (
-            "你是一个股票代码查询助手。用户会输入一个股票名称或关键词，"
-            "你需要返回对应的**标准股票代码**。\n\n"
-            "返回格式要求：\n"
-            "- A股返回6位纯数字代码，例如：平安银行→000001，厦门港务→000905\n"
-            "- 港股返回数字.HK格式，例如：腾讯控股→0700.HK，美团→3690.HK\n"
-            "- 美股返回大写字母代码，例如：苹果→AAPL，特斯拉→TSLA\n\n"
-            "重要规则：\n"
-            "1. 只返回一个最匹配的股票代码，不要有任何多余文字、解释或标点\n"
-            "2. 如果输入同时有A股和其他市场，优先返回A股代码\n"
-            "3. 如果输入不是股票名称（例如是普通词语、指令等），直接回复 UNKNOWN\n"
-            "4. 如果完全无法识别对应的股票，直接回复 UNKNOWN\n\n"
-            f"用户输入：{raw_input}"
-        )
+        prompt = f"用户输入：{raw_input}"
 
         try:
-            result = await llm.ask(prompt)
-            result = result.strip().strip('`').strip()
+            result = await llm.ask(prompt, persona_id=PERSONA_STOCK_RESOLVER)
+            result = result.strip().strip("`").strip()
 
-            if result.upper() == 'UNKNOWN' or not result:
+            if result.upper() == "UNKNOWN" or not result:
                 logger.warning(f"LLM无法解析股票名称 '{raw_input}' → 无法识别")
                 return None
 
@@ -183,10 +195,11 @@ class TradingAssistantPlugin(Star):
         """判断用户输入是否需要 LLM 解析（即不是有效的股票代码格式）"""
         return not StockUtils.is_valid_stock_code(ticker)
 
-    async def _run_stock_analysis(self, ticker: str, event: AstrMessageEvent = None,
-                                    quick_mode: bool = False) -> str:
+    async def _run_stock_analysis(
+        self, ticker: str, event: AstrMessageEvent = None, quick_mode: bool = False
+    ) -> str:
         """执行股票分析，支持实时进度推送
-        
+
         Args:
             ticker: 标准股票代码
             event: 消息事件（用于进度推送）
@@ -204,22 +217,25 @@ class TradingAssistantPlugin(Star):
                 except Exception as e:
                     logger.warning(f"发送进度消息失败: {e}")
 
-        graph = FinancialAssistantGraph(llm, data_fetcher, progress_callback=progress_callback)
+        graph = FinancialAssistantGraph(
+            llm, data_fetcher, progress_callback=progress_callback
+        )
 
         mode_label = "（快速分析）" if quick_mode else ""
         logger.info(f"开始分析股票{mode_label}: {ticker}")
         report = await graph.analyze(ticker, quick_mode=quick_mode)
-        
+
         # 检查是否为数据不完整的错误报告
         if report.startswith("❌"):
             logger.warning(f"分析因数据不完整而终止: {ticker}")
-        
+
         return report
-    
-    async def _do_stock_analysis(self, ticker_input: str, event: AstrMessageEvent,
-                                    quick_mode: bool = False) -> MessageEventResult:
+
+    async def _do_stock_analysis(
+        self, ticker_input: str, event: AstrMessageEvent, quick_mode: bool = False
+    ) -> MessageEventResult:
         """公共股票分析逻辑，供各命令处理器复用。
-        
+
         Args:
             ticker_input: 用户输入的股票代码或名称
             event: 消息事件
@@ -241,10 +257,14 @@ class TradingAssistantPlugin(Star):
                     )
                     return
                 if event:
-                    await event.send(event.plain_result(f"🔍 已识别「{ticker}」→ {resolved}"))
+                    await event.send(
+                        event.plain_result(f"🔍 已识别「{ticker}」→ {resolved}")
+                    )
                 ticker = resolved
 
-            report = await self._run_stock_analysis(ticker, event, quick_mode=quick_mode)
+            report = await self._run_stock_analysis(
+                ticker, event, quick_mode=quick_mode
+            )
 
             # 如果是错误报告，直接返回文字
             if report.startswith("❌"):
@@ -267,7 +287,9 @@ class TradingAssistantPlugin(Star):
                         file_path = save_report_pdf(report, ticker)
                         file_label = "PDF"
                     except Exception as pdf_err:
-                        logger.error(f"PDF 生成失败: {type(pdf_err).__name__}: {repr(pdf_err)}")
+                        logger.error(
+                            f"PDF 生成失败: {type(pdf_err).__name__}: {repr(pdf_err)}"
+                        )
                         file_path = save_report_md(report, ticker)
                         file_label = "Markdown"
                 else:
@@ -275,7 +297,9 @@ class TradingAssistantPlugin(Star):
                     file_label = "Markdown"
 
                 chain = [
-                    Comp.Plain(f"📊 {ticker} 分析结论：\n\n{conclusion}\n\n---\n📄 完整报告见附件（{file_label}）。"),
+                    Comp.Plain(
+                        f"📊 {ticker} 分析结论：\n\n{conclusion}\n\n---\n📄 完整报告见附件（{file_label}）。"
+                    ),
                     Comp.File(file=file_path, name=os.path.basename(file_path)),
                 ]
                 yield event.chain_result(chain)
@@ -290,7 +314,9 @@ class TradingAssistantPlugin(Star):
             yield event.plain_result("分析服务配置异常，请联系管理员检查插件设置。")
         except Exception as e:
             logger.error(f"股票分析失败: {e}", exc_info=True)
-            yield event.plain_result("分析服务暂时不可用，请稍后重试。如果问题持续，请联系管理员。")
+            yield event.plain_result(
+                "分析服务暂时不可用，请稍后重试。如果问题持续，请联系管理员。"
+            )
 
     @filter.command("股票分析")
     async def analyze_stock(self, event: AstrMessageEvent) -> MessageEventResult:
@@ -307,7 +333,7 @@ class TradingAssistantPlugin(Star):
 
         async for result in self._do_stock_analysis(message_str, event):
             yield result
-    
+
     @filter.command("股票")
     async def stock_command(self, event: AstrMessageEvent) -> MessageEventResult:
         """
@@ -336,7 +362,9 @@ class TradingAssistantPlugin(Star):
             yield event.plain_result("请提供股票代码或名称，例如：/快速分析 000001")
             return
 
-        async for result in self._do_stock_analysis(message_str, event, quick_mode=True):
+        async for result in self._do_stock_analysis(
+            message_str, event, quick_mode=True
+        ):
             yield result
 
     @filter.command("年报")
@@ -353,7 +381,7 @@ class TradingAssistantPlugin(Star):
 
         async for result in self._do_stock_analysis(message_str, event):
             yield result
-    
+
     @filter.command("查股")
     async def lookup_stock(self, event: AstrMessageEvent) -> MessageEventResult:
         """
@@ -361,13 +389,13 @@ class TradingAssistantPlugin(Star):
         用法: /查股 <代码>
         """
         message_str = self._extract_command_arg(event.message_str, ["查股"])
-        
+
         if not message_str:
             yield event.plain_result("请提供股票代码，例如：/查股 000001")
             return
-        
+
         ticker = message_str
-        
+
         try:
             # 如果输入不是有效的股票代码格式，尝试本地+LLM解析
             if self._needs_ticker_resolution(ticker):
@@ -379,36 +407,38 @@ class TradingAssistantPlugin(Star):
                     )
                     return
                 if event:
-                    await event.send(event.plain_result(f"🔍 已识别「{ticker}」→ {resolved}"))
+                    await event.send(
+                        event.plain_result(f"🔍 已识别「{ticker}」→ {resolved}")
+                    )
                 ticker = resolved
 
             # 获取市场信息
             market_info = StockUtils.get_market_info(ticker)
 
             # 检查是否解析失败（无法识别的市场）
-            if market_info.get('resolution_failed'):
+            if market_info.get("resolution_failed"):
                 yield event.plain_result(f"❌ {market_info['resolution_message']}")
                 return
 
-            normalized = market_info['normalized_ticker']
+            normalized = market_info["normalized_ticker"]
             stock_name = StockUtils.get_stock_name(ticker)
-            
+
             # 格式化输出
             info_text = f"""**股票信息**
 
 股票名称: {stock_name}
 股票代码: {normalized}
-所属市场: {market_info['market_name']}
-交易所: {market_info['exchange']}
-计价货币: {market_info['currency_name']}（{market_info['currency_symbol']}）
+所属市场: {market_info["market_name"]}
+交易所: {market_info["exchange"]}
+计价货币: {market_info["currency_name"]}（{market_info["currency_symbol"]}）
 """
-            
+
             yield event.plain_result(info_text)
-            
+
         except Exception as e:
             logger.error(f"股票查询失败: {e}", exc_info=True)
             yield event.plain_result("查询服务暂时不可用，请稍后重试。")
-    
+
     @filter.command("帮助")
     async def show_help(self, event: AstrMessageEvent) -> MessageEventResult:
         """
@@ -452,10 +482,10 @@ class TradingAssistantPlugin(Star):
 - 分析结果仅供参考，不构成投资建议
 """
         yield event.plain_result(help_text)
-    
+
     async def terminate(self):
         """插件卸载时调用"""
         # 关闭 LLM 客户端连接
-        if self.llm is not None and hasattr(self.llm, 'close'):
+        if self.llm is not None and hasattr(self.llm, "close"):
             await self.llm.close()
         logger.info("TradingAssistantPlugin 卸载中...")

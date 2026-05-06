@@ -60,6 +60,24 @@ git clone https://github.com/YYY7C/TradingAgents-AstrBot.git
 
 > 支持 OpenAI 兼容协议的各种模型（智谱 GLM、DeepSeek、OpenAI、MiniMax 等）。推荐使用支持 Function Calling 的模型以获得最佳效果。
 
+### AstrBot 人格联动
+
+- 插件启动时会检查所需的 AstrBot 人格是否存在。
+- 若不存在，会自动创建一组 `tradingagents_*` 人格，并把当前内置提示词写入人格的初始提示词。
+- 若已存在同名人格，插件不会覆盖，后续调用会直接使用你在 AstrBot WebUI 中编辑后的提示词。
+
+当前会自动管理的人格包括：
+
+- `tradingagents_stock_resolver`
+- `tradingagents_market_analyst`
+- `tradingagents_fundamentals_analyst`
+- `tradingagents_fundamentals_etf_analyst`
+- `tradingagents_news_analyst`
+- `tradingagents_bull_researcher`
+- `tradingagents_bear_researcher`
+- `tradingagents_research_manager`
+- `tradingagents_risk_judge`
+
 ## 📖 使用方法
 
 | 命令 | 说明 | 示例 |

@@ -55,13 +55,17 @@ class OpenAICompatibleLLM:
             await self._session.close()
             self._session = None
 
-    async def ask(self, prompt: str) -> str:
-        return await self.__call__(prompt)
+    async def ask(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        return await self.__call__(prompt, system_prompt=system_prompt)
 
-    async def __call__(self, prompt: str) -> str:
+    async def __call__(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
         }
@@ -76,51 +80,61 @@ class OpenAICompatibleLLM:
                 async with session.post(
                     self.url, headers=self.headers, json=payload
                 ) as response:
-                        if response.status != 200:
-                            error_text = await response.text()
-                            if response.status in _RETRYABLE_STATUS and attempt < self.max_retries:
-                                wait = 2 ** attempt
-                                logger.warning(
-                                    "LLM API 返回 %d (尝试 %d/%d)，%ds 后重试…",
-                                    response.status, attempt + 1, self.max_retries + 1, wait,
-                                )
-                                await asyncio.sleep(wait)
-                                continue
-                            raise RuntimeError(
-                                f"LLM API错误 ({response.status}): {error_text[:300]}"
-                            )
-
-                        try:
-                            result = await response.json()
-                        except Exception as json_err:
-                            # HTTP 200 但响应体非合法 JSON（网关错误页等），触发重试
-                            error_text = await response.text()
+                    if response.status != 200:
+                        error_text = await response.text()
+                        if (
+                            response.status in _RETRYABLE_STATUS
+                            and attempt < self.max_retries
+                        ):
+                            wait = 2**attempt
                             logger.warning(
-                                "LLM API 返回 200 但 JSON 解码失败: %s (body=%s)",
-                                type(json_err).__name__, error_text[:200],
+                                "LLM API 返回 %d (尝试 %d/%d)，%ds 后重试…",
+                                response.status,
+                                attempt + 1,
+                                self.max_retries + 1,
+                                wait,
                             )
-                            if attempt < self.max_retries:
-                                await asyncio.sleep(2 ** attempt)
-                                continue
-                            raise RuntimeError(
-                                f"LLM API JSON 解码失败: {type(json_err).__name__}: {json_err}"
-                            ) from json_err
+                            await asyncio.sleep(wait)
+                            continue
+                        raise RuntimeError(
+                            f"LLM API错误 ({response.status}): {error_text[:300]}"
+                        )
 
-                        try:
-                            content = result["choices"][0]["message"]["content"]
-                        except (KeyError, IndexError, TypeError) as e:
-                            raise RuntimeError(
-                                f"LLM API 返回了非预期的响应结构: {e} (keys={list(result.keys())})"
-                            ) from e
-                        return self._clean_response(content)
+                    try:
+                        result = await response.json()
+                    except Exception as json_err:
+                        # HTTP 200 但响应体非合法 JSON（网关错误页等），触发重试
+                        error_text = await response.text()
+                        logger.warning(
+                            "LLM API 返回 200 但 JSON 解码失败: %s (body=%s)",
+                            type(json_err).__name__,
+                            error_text[:200],
+                        )
+                        if attempt < self.max_retries:
+                            await asyncio.sleep(2**attempt)
+                            continue
+                        raise RuntimeError(
+                            f"LLM API JSON 解码失败: {type(json_err).__name__}: {json_err}"
+                        ) from json_err
+
+                    try:
+                        content = result["choices"][0]["message"]["content"]
+                    except (KeyError, IndexError, TypeError) as e:
+                        raise RuntimeError(
+                            f"LLM API 返回了非预期的响应结构: {e} (keys={list(result.keys())})"
+                        ) from e
+                    return self._clean_response(content)
 
             except asyncio.TimeoutError as exc:
                 last_error = exc
                 if attempt < self.max_retries:
-                    wait = 2 ** attempt
+                    wait = 2**attempt
                     logger.warning(
                         "LLM 超时 (尝试 %d/%d, 超时 %ds)，%ds 后重试…",
-                        attempt + 1, self.max_retries + 1, self.timeout_seconds, wait,
+                        attempt + 1,
+                        self.max_retries + 1,
+                        self.timeout_seconds,
+                        wait,
                     )
                     await asyncio.sleep(wait)
                     continue
@@ -129,10 +143,13 @@ class OpenAICompatibleLLM:
             except aiohttp.ClientError as exc:
                 last_error = exc
                 if attempt < self.max_retries:
-                    wait = 2 ** attempt
+                    wait = 2**attempt
                     logger.warning(
                         "LLM 网络错误 (尝试 %d/%d): %s，%ds 后重试…",
-                        attempt + 1, self.max_retries + 1, exc, wait,
+                        attempt + 1,
+                        self.max_retries + 1,
+                        exc,
+                        wait,
                     )
                     await asyncio.sleep(wait)
                     continue
@@ -146,5 +163,7 @@ class OpenAICompatibleLLM:
     def _clean_response(content: str) -> str:
         if not content:
             return content
-        cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(
+            r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE
+        )
         return cleaned.strip() or content.strip()

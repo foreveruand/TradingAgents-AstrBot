@@ -1,75 +1,81 @@
 """
 多方研究员 - 负责挖掘股票的利好因素
 """
-from typing import Dict
+
 
 from astrbot.api import logger
+
+from ..personas import PERSONA_BULL_RESEARCHER
 
 
 class BullResearcher:
     """多方研究员 - 寻找支撑股价上涨的证据"""
-    
+
     def __init__(self, llm, data_fetcher):
         self.llm = llm
         self.data_fetcher = data_fetcher
-    
-    async def research(self, ticker: str, trade_date: str, context: Dict) -> str:
+
+    async def research(self, ticker: str, trade_date: str, context: dict) -> str:
         """
         研究利好因素
-        
+
         Args:
             ticker: 股票代码
             trade_date: 交易日期
             context: 包含市场分析、基本面分析等上下文
-            
+
         Returns:
             多方研究报告
         """
         logger.info(f"多方研究员开始研究: {ticker}")
-        
+
         from ..utils.stock_utils import StockUtils
-        
+
         market_info = StockUtils.get_market_info(ticker)
-        normalized_ticker = market_info['normalized_ticker']
+        normalized_ticker = market_info["normalized_ticker"]
         stock_name = StockUtils.get_stock_name(ticker)
-        
+
         prompt = self._build_bull_prompt(
             ticker=normalized_ticker,
             stock_name=stock_name,
             trade_date=trade_date,
             market_info=market_info,
-            context=context
+            context=context,
         )
-        
-        response = await self.llm.ask(prompt)
-        
-        logger.info(f"多方研究员完成研究: {ticker}")
-        
-        return response
-    
-    def _build_bull_prompt(self, ticker: str, stock_name: str, trade_date: str, 
-                          market_info: Dict, context: Dict) -> str:
-        """构建多方研究提示词"""
-        
-        return f"""你是一位专业的研究员，负责分析股票的利好因素。
 
-## 股票信息
+        response = await self.llm.ask(prompt, persona_id=PERSONA_BULL_RESEARCHER)
+
+        logger.info(f"多方研究员完成研究: {ticker}")
+
+        return response
+
+    def _build_bull_prompt(
+        self,
+        ticker: str,
+        stock_name: str,
+        trade_date: str,
+        market_info: dict,
+        context: dict,
+    ) -> str:
+        """构建多方研究提示词"""
+
+        return f"""## 股票信息
 - 股票名称：{stock_name}
 - 股票代码：{ticker}
-- 市场：{market_info['market_name']}
+- 市场：{market_info["market_name"]}
 - 交易日期：{trade_date}
 
 ## 已有分析信息
 以下是其他分析师提供的信息：
 
 ### 市场技术面分析
-{context.get('market_analysis', '暂无市场技术面分析')}
+{context.get("market_analysis", "暂无市场技术面分析")}
 
 ### 基本面分析
-{context.get('fundamentals_analysis', '暂无基本面分析')}
+{context.get("fundamentals_analysis", "暂无基本面分析")}
 
 ### 新闻面分析
-{context.get('news_analysis', '暂无新闻面分析')}
+{context.get("news_analysis", "暂无新闻面分析")}
 
 ## 你的任务
 请从以下角度深入挖掘该股票的利好因素：
@@ -105,11 +111,4 @@ class BullResearcher:
 2. 引用具体数据支持你的观点
 3. 区分短期和长期利好因素
 4. 给出支撑股价上涨的核心逻辑
-
----
-重要提醒：
-- 必须使用上述格式输出
-- 要有具体的数据支撑
-- 区分短期和长期因素
-- 保持客观理性的分析态度
 """
