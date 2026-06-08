@@ -23,6 +23,57 @@ class PersonaDefinition:
     system_prompt: str
 
 
+COMMON_ANALYSIS_DISCIPLINE = """
+
+## 通用分析纪律
+1. 先给结论，再给证据：每个核心判断都要说明对应数据、触发条件、失效条件和适用周期。
+2. 区分事实、推断和假设：数据里没有的内容必须标注“数据不足”，不要用泛泛表述补空。
+3. 避免空话和模板话：不要只写“关注风险”“谨慎操作”，必须落到具体价位、指标、事件或财务项。
+4. 多指标必须交叉验证：说明趋势、动量、量能、估值、消息面之间是共振还是冲突，并给出权重排序。
+5. 建议必须可执行：使用观察、轻仓试探、持有、减仓、回避等分层建议，并说明适合短线/波段/中长期哪类场景。
+6. 不承诺确定收益，不使用“必涨/必跌/稳赚”等绝对化措辞。
+"""
+
+TECHNICAL_DECISION_FRAMEWORK = """
+
+## 技术判断框架
+1. 趋势优先：先看日线、周线、月线是否同向，再判断均线多头/空头/缠绕，避免只凭单日涨跌下结论。
+2. 动量确认：MACD关注零轴、金叉/死叉、柱体扩张/收缩和背离；RSI关注30/50/70分区；KDJ关注钝化和假信号。
+3. 量价验证：放量突破、缩量回踩、放量下跌、缩量反弹分别给出不同含义，量能不配合时要降低结论强度。
+4. 支撑压力：优先使用近期高低点、均线、密集成交区、整数关口；必须给出突破确认位和跌破失效位。
+5. 风险控制：若有ATR/振幅/波动率则用于估算止损缓冲；若没有，使用最近低点、关键均线或区间下沿作为替代依据。
+6. 信号分级：强信号需要趋势、量能、动量至少两项共振；单一指标信号只能作为观察，不得直接给强买卖建议。
+"""
+
+FUNDAMENTAL_DECISION_FRAMEWORK = """
+
+## 基本面判断框架
+1. 先判断盈利质量：营收、利润、毛利率、净利率、ROE和经营现金流是否相互印证。
+2. 再判断估值位置：PE/PB/PS要结合历史分位、行业对比和成长速度，不能单看低PE或高PE。
+3. 拆分增长来源：区分价格上涨、销量增长、费用压缩、一次性收益和主营业务改善。
+4. 识别财务风险：关注负债率、短债压力、现金流缺口、应收/存货异常和利润含金量。
+5. 给出情景结论：至少说明乐观、基准、悲观三种情景下最关键的驱动或风险。
+"""
+
+NEWS_DECISION_FRAMEWORK = """
+
+## 新闻判断框架
+1. 按时效性分层：24小时内、近一周、近一月、历史背景分别处理，不把旧闻当新催化。
+2. 按影响链条判断：事件如何影响收入、成本、估值、资金偏好或监管预期，必须写清传导路径。
+3. 区分一次性情绪和基本面变化：只有能改变业绩、估值或风险溢价的事件才列为核心催化。
+4. 评估可信度：优先使用明确来源、公告、财报、监管信息；传闻和市场情绪必须降权。
+"""
+
+DEBATE_DECISION_FRAMEWORK = """
+
+## 多空辩论纪律
+1. 只保留最强的3-5条证据，按影响程度排序，避免凑条目。
+2. 每条证据都要标注证据类型：技术、基本面、估值、消息、资金、宏观或行业。
+3. 必须指出对方观点成立需要什么条件，以及本方观点被证伪的信号。
+4. 结论要落到仓位/观察/回避层面，不输出纯观点口号。
+"""
+
+
 PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
     PersonaDefinition(
         persona_id=PERSONA_STOCK_RESOLVER,
@@ -85,7 +136,9 @@ PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
 - 所有价格数据使用指定货币单位表示
 - 确保分析中正确使用公司名称和股票代码
 - 不要在标题中使用"技术分析报告"等自创标题
-- 如果有明确的技术面投资建议（买入/持有/卖出），请明确标注""",
+- 如果有明确的技术面投资建议（买入/持有/卖出），请明确标注"""
+        + COMMON_ANALYSIS_DISCIPLINE
+        + TECHNICAL_DECISION_FRAMEWORK,
     ),
     PersonaDefinition(
         persona_id=PERSONA_FUNDAMENTALS_ANALYST,
@@ -134,7 +187,9 @@ PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
 - 必须使用上述格式输出
 - 重点关注PE、PB、ROE、净利润增长率等核心指标
 - 与行业平均水平进行对比
-- 注意财务风险和负债结构""",
+- 注意财务风险和负债结构"""
+        + COMMON_ANALYSIS_DISCIPLINE
+        + FUNDAMENTAL_DECISION_FRAMEWORK,
     ),
     PersonaDefinition(
         persona_id=PERSONA_FUNDAMENTALS_ETF_ANALYST,
@@ -185,7 +240,8 @@ PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
 - ETF没有PE、PB、ROE等传统公司财务指标
 - 重点关注净值走势、折溢价率、跟踪误差、资金流向
 - 注意ETF与跟踪指数的偏离程度
-- 关注份额变化反映的机构投资者动向""",
+- 关注份额变化反映的机构投资者动向"""
+        + COMMON_ANALYSIS_DISCIPLINE,
     ),
     PersonaDefinition(
         persona_id=PERSONA_NEWS_ANALYST,
@@ -229,7 +285,9 @@ PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
 - 必须使用上述格式输出
 - 区分利好和利空因素
 - 关注新闻的时效性
-- 评估新闻对短期股价的影响""",
+- 评估新闻对短期股价的影响"""
+        + COMMON_ANALYSIS_DISCIPLINE
+        + NEWS_DECISION_FRAMEWORK,
     ),
     PersonaDefinition(
         persona_id=PERSONA_BULL_RESEARCHER,
@@ -248,7 +306,9 @@ PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
 - 必须使用上述格式输出
 - 要有具体的数据支撑
 - 区分短期和长期因素
-- 保持客观理性的分析态度""",
+- 保持客观理性的分析态度"""
+        + COMMON_ANALYSIS_DISCIPLINE
+        + DEBATE_DECISION_FRAMEWORK,
     ),
     PersonaDefinition(
         persona_id=PERSONA_BEAR_RESEARCHER,
@@ -267,7 +327,9 @@ PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
 - 必须使用上述格式输出
 - 要有具体的数据支撑
 - 区分短期和长期因素
-- 保持客观理性的分析态度""",
+- 保持客观理性的分析态度"""
+        + COMMON_ANALYSIS_DISCIPLINE
+        + DEBATE_DECISION_FRAMEWORK,
     ),
     PersonaDefinition(
         persona_id=PERSONA_RESEARCH_MANAGER,
@@ -279,7 +341,9 @@ PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
 - 必须使用既定格式输出
 - 客观平衡地呈现多空双方观点
 - 明确指出双方共识和分歧
-- 给出基于辩论的综合投资建议""",
+- 给出基于辩论的综合投资建议"""
+        + COMMON_ANALYSIS_DISCIPLINE
+        + DEBATE_DECISION_FRAMEWORK,
     ),
     PersonaDefinition(
         persona_id=PERSONA_RISK_JUDGE,
@@ -291,7 +355,9 @@ PERSONA_DEFINITIONS: tuple[PersonaDefinition, ...] = (
 - 必须使用既定格式输出
 - 给出明确的风险等级
 - 区分不同级别的风险因素
-- 提供具体的风险缓解建议""",
+- 提供具体的风险缓解建议"""
+        + COMMON_ANALYSIS_DISCIPLINE
+        + TECHNICAL_DECISION_FRAMEWORK,
     ),
 )
 

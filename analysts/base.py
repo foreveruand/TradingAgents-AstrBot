@@ -52,6 +52,18 @@ class BaseAnalyst(ABC):
         result = await self.llm(prompt, persona_id=persona_id)
         return result
 
+    @staticmethod
+    def _build_quality_requirements() -> str:
+        """返回所有分析师通用的报告质量约束。"""
+        return """## 报告质量要求
+- 先给可执行结论，再列关键证据；不要先铺陈大量背景。
+- 每个结论必须引用上方数据中的具体指标、数值、日期、区间或新闻事件；没有数据时写“数据不足”，不要猜测。
+- 明确区分短线（1-5个交易日）、波段（2-8周）和中长期（1个季度以上）的判断。
+- 至少给出一个确认条件和一个失效条件，例如突破/跌破价位、均线、量能、业绩指标或事件进展。
+- 如果多项指标冲突，必须说明冲突点和最终采用的权重，而不是只选择支持结论的指标。
+- 输出应压缩重复解释，避免“建议关注后续变化”等没有具体观察点的空话。
+"""
+
     @abstractmethod
     def _get_persona_id(self, *, is_etf: bool = False) -> str:
         """获取当前分析场景对应的人格 ID。"""
@@ -112,5 +124,7 @@ class BaseAnalyst(ABC):
 
         if sentiment_data:
             prompt += f"## 情绪数据\n{sentiment_data}\n\n"
+
+        prompt += self._build_quality_requirements()
 
         return prompt

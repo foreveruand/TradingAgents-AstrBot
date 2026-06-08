@@ -7,6 +7,15 @@
 
 ---
 
+## [1.2.4] - 2026-06-08
+
+### 改进
+
+- 🧭 **报告结论更可执行** — 优化各分析师与辩论节点提示词，要求输出结论、证据、触发条件、失效条件、适用周期和仓位/止损建议，减少泛泛而谈
+- 📊 **技术分析框架增强** — 市场分析师新增多周期趋势、均线、量价、MACD/RSI/KDJ、支撑压力和风险收益比的交叉验证要求
+- ⚖️ **多空辩论更聚焦证据** — 多方、空方和研究主管改为保留最强证据、回应反方观点，并标注证伪条件，避免简单罗列利好/利空
+- 🛡️ **风险评估更落地** — 风险裁判新增仓位、止损/减仓位、加仓确认条件和事件跟踪项输出要求
+
 ## [1.2.3] - 2026-05-06
 
 ### 新增
@@ -115,8 +124,11 @@
 
 ---
 
-[1.2.0]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.2.0
+[1.2.4]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.2.4
+[1.2.3]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.2.3
+[1.2.2]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.2.2
 [1.2.1]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.2.1
+[1.2.0]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.2.0
 [1.1.3]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.1.3
 [1.1.2]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.1.2
 [1.1.1]: https://github.com/YYY7C/TradingAgents-AstrBot/releases/tag/v1.1.1
